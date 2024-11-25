@@ -1,10 +1,13 @@
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 import os
+import re
 import shutil
 import uuid
 import subprocess
 import pandas as pd
+
+REPO_URL_REGEX = re.compile(r"https://github\.com/[A-Za-z0-9\-\_]+/[A-Za-z0-9\-\_]+")
 
 
 @dataclass
@@ -15,16 +18,24 @@ class Team:
     repository: Optional[str]
 
 
+def strip_repo_url(repo_url: str) -> str:
+    match = REPO_URL_REGEX.search(repo_url)
+    if match:
+        return match.group(0)
+    return repo_url
+
+
 def read_team_spreadsheet(sheet_url: str) -> List[Team]:
     csv_export_url = sheet_url.replace("/edit?gid=", "/export?format=csv&gid=")
     dataframe = pd.read_csv(csv_export_url, header=1, skiprows=0)
     result = []
     for _, team_row in dataframe[~dataframe['Team Nr'].isna()].iterrows():
+        repo_url = strip_repo_url(team_row['GitHub Repo URL']) if not pd.isna(team_row['GitHub Repo URL']) else None
         result.append(Team(
             id=str(uuid.uuid4()),
             nr=team_row['Team Nr'] if not pd.isna(team_row['Team Nr']) else None,
             name=team_row['Team Name'] if not pd.isna(team_row['Team Name']) else None,
-            repository=team_row['GitHub Repo URL'] if not pd.isna(team_row['GitHub Repo URL']) else None
+            repository=repo_url
             ))
     return result
 
@@ -68,8 +79,10 @@ def evaluate_commit_hist(repo_dir: str) -> Dict[str, int]:
 
 
 def remove_lecturer_contributions(contributors: Dict[str, int]) -> None:
-    del contributors['Oliver Staubli']
-    del contributors['samhab']
+    if 'Oliver Staubli' in contributors:
+        del contributors['Oliver Staubli']
+    if 'samhab' in contributors:
+        del contributors['samhab']
 
 
 def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
