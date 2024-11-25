@@ -67,6 +67,11 @@ def evaluate_commit_hist(repo_dir: str) -> Dict[str, int]:
     return out
 
 
+def remove_lecturer_contributions(contributors: Dict[str, int]) -> None:
+    del contributors['Oliver Staubli']
+    del contributors['samhab']
+
+
 def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
     teams = read_team_spreadsheet(sheet_url)
     out = []
@@ -87,6 +92,7 @@ def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
                 errors = f"Error when cloning repo: {err}"
             else:
                 eval_results = evaluate_commit_hist(repo_dir)
+                remove_lecturer_contributions(eval_results)
                 print(eval_results)
                 passed = len(eval_results) == 5 and min(eval_results.values()) > 4
                 contributors = ", ".join([f"{user} ({commits})" for user, commits in eval_results.items()])
