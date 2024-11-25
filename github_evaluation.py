@@ -29,13 +29,21 @@ def read_team_spreadsheet(sheet_url: str) -> List[Team]:
     return result
 
 
+class CloneRepoError(Exception):
+    pass
+
+
 def clone_repo(repo_url: str, clone_dir: str) -> None:
     """ Clone repository to clone_dir. If directory exists, it needs to be empty """
     if not os.path.exists(clone_dir):
         os.makedirs(clone_dir)
     wd = os.getcwd()
     os.chdir(clone_dir)
-    subprocess.run(["git", "clone", repo_url, clone_dir], check=True)
+    try:
+        subprocess.run(["git", "clone", repo_url, clone_dir], check=True)
+    except subprocess.CalledProcessError as err:
+        os.chdir(wd)
+        raise CloneRepoError(err) from err
     os.chdir(wd)
 
 
@@ -62,8 +70,8 @@ def evaluate_commit_hist(repo_dir: str) -> Dict[str, int]:
 def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
     teams = read_team_spreadsheet(sheet_url)
     out = []
-    errors = "no errors"
     for team in teams:
+        errors = "no errors"
         if team.repository is None:
             passed = False
             contributors = None
@@ -73,7 +81,7 @@ def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
             repo_dir = os.path.join(temp_dir, team.id)
             try:
                 clone_repo(team.repository, repo_dir)
-            except subprocess.CalledProcessError as err:
+            except CloneRepoError as err:
                 passed = False
                 contributors = None
                 errors = f"Error when cloning repo: {err}"
@@ -96,8 +104,8 @@ def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
 
 if __name__ == "__main__":
 
-    #sheeturl = "https://docs.google.com/spreadsheets/d/1d2ihVlrR-1paZUCB2vc0b42ah566luzBrqVObEeZsJ8/edit?gid=0#gid=0"
-    #df = read_team_spreadsheet(sheeturl)
+    #sheet_url = "https://docs.google.com/spreadsheets/d/1d2ihVlrR-1paZUCB2vc0b42ah566luzBrqVObEeZsJ8/edit?gid=0#gid=0"
+    #teams = read_team_spreadsheet(sheet_url)
     url = os.getenv("SPREADSHEET_URL")
     if url is None:
         raise ValueError('No Spreadsheet URL provided')
