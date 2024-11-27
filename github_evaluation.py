@@ -150,9 +150,9 @@ def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
     teams = read_team_spreadsheet(sheet_url)
     master_repo = prepare_benchmark_evaluation(temp_dir=temp_dir)
     out = []
-    benchmark_results = {}
     for team in teams:
         errors = "no errors"
+        benchmark_results = {}
         if team.repository is None:
             passed = False
             contributors = None
