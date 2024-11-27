@@ -8,7 +8,7 @@ import subprocess
 import pandas as pd
 
 REPO_URL_REGEX = re.compile(r"https://github\.com/[A-Za-z0-9\-\_]+/[A-Za-z0-9\-\_]+")
-
+BENCHMARK_OUTPUT_REGEX = re.compile(r"(Tests:\s\d+/\d+\svalid\nMark:\s\s\d+/\d+\spoints)\n\n$")
 
 @dataclass
 class Team:
@@ -85,9 +85,72 @@ def remove_lecturer_contributions(contributors: Dict[str, int]) -> None:
         del contributors['samhab']
 
 
+class RunBenchmarkError(Exception):
+    pass
+
+
+def run_benchmark(repo_dir: str, game: str, timeout: int = 120) -> str:
+    wd = os.getcwd()
+    os.chdir(repo_dir)
+    try:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = repo_dir
+        result = subprocess.run(
+            ["python", f"benchmark/benchmark_{game}.py", "python", f"{game}.{game.capitalize()}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=False,
+            timeout=timeout,
+            env=env
+        )
+    except subprocess.TimeoutExpired as err:
+        os.chdir(wd)
+        raise RunBenchmarkError("Timeout") from err
+    os.chdir(wd)
+    if result.returncode != 0:
+        raise RunBenchmarkError("Benchmark evaluation failed with message: " + result.stderr)
+    scores = BENCHMARK_OUTPUT_REGEX.search(result.stdout)
+    if scores:
+        return scores.group(1)
+    raise RunBenchmarkError("No proper Benchmark output (missing 'Tests/Mark' section)")
+
+
+def prepare_benchmark_evaluation(
+    temp_dir: str,
+    benchmark_repo_url: str = "https://github.com/ostaubli/devops_project"
+    ) -> str:
+    """ Clone the benchmark-repo and install requirements according to the 'requirements.txt'. Return repo path """
+    repo_dir = os.path.join(temp_dir, 'master_repo')
+    clone_repo(benchmark_repo_url, repo_dir)
+    subprocess.run(["pip", "install", "-r", f"{repo_dir}/requirements.txt"], check=True)
+    return repo_dir
+
+
+def run_all_benchmarks(repo_dir: str, benchmark_repo_dir: str) -> dict[str, str]:
+    """
+    Replace the benchmark files in 'repo_dir' with the files from 'benchmark_repo_dir' and evaluate
+    Returns dict with 'game': 'eval string'
+    """
+    if os.path.exists(os.path.join(repo_dir, 'benchmark')):
+        shutil.rmtree(os.path.join(repo_dir, 'benchmark'))
+    shutil.copytree(os.path.join(benchmark_repo_dir, 'benchmark'), os.path.join(repo_dir, 'benchmark'))
+    shutil.copy(os.path.join(benchmark_repo_dir, 'mypy.ini'), repo_dir)
+    shutil.copy(os.path.join(benchmark_repo_dir, '.pylintrc'), repo_dir)
+    out = {}
+    for game in ['hangman', 'battleship', 'uno', 'dog']:
+        try:
+            out[game] = run_benchmark(repo_dir, game)
+        except RunBenchmarkError as err:
+            out[game] = str(err)
+    return out
+
+
 def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
     teams = read_team_spreadsheet(sheet_url)
+    master_repo = prepare_benchmark_evaluation(temp_dir=temp_dir)
     out = []
+    benchmark_results = {}
     for team in teams:
         errors = "no errors"
         if team.repository is None:
@@ -106,9 +169,9 @@ def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
             else:
                 eval_results = evaluate_commit_hist(repo_dir)
                 remove_lecturer_contributions(eval_results)
-                print(eval_results)
                 passed = len(eval_results) == 5 and min(eval_results.values()) > 4
                 contributors = ", ".join([f"{user} ({commits})" for user, commits in eval_results.items()])
+                benchmark_results = run_all_benchmarks(repo_dir, master_repo)
             shutil.rmtree(repo_dir)
         out.append({
             "team_id": team.nr,
@@ -116,8 +179,13 @@ def check_repos(sheet_url: str, temp_dir: str) -> pd.DataFrame:
             "repository": team.repository,
             "passed": passed,
             "contributors": contributors,
-            "errors": errors
+            "errors": errors,
+            "hangman_benchmark": benchmark_results['hangman'] if 'hangman' in benchmark_results else '-',
+            "battleship_benchmark": benchmark_results['battleship'] if 'battleship' in benchmark_results else '-',
+            "uno_benchmark": benchmark_results['uno'] if 'uno' in benchmark_results else '-',
+            "dog_benchmark": benchmark_results['dog'] if 'dog' in benchmark_results else '-'
             })
+    shutil.rmtree(master_repo)
     return pd.DataFrame(out)
 
 
