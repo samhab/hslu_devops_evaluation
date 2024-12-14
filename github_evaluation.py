@@ -5,6 +5,7 @@ import re
 import shutil
 import uuid
 import subprocess
+import datetime as dt
 import pandas as pd
 import jira
 from requests.exceptions import InvalidURL
@@ -71,6 +72,32 @@ def clone_repo(repo_url: str, clone_dir: str) -> None:
     os.chdir(wd)
 
 
+def checkout_last_valid_commit(repo_dir: str, deadline: str) -> None:
+    wd = os.getcwd()
+    os.chdir(repo_dir)
+    commit_info = subprocess.run(
+        ["git", "log", f"--before={deadline}", "-1", "--format=%h;%ad"],
+        capture_output=True,
+        text=True,
+        check=True
+        ).stdout.strip()
+    commit_id, commit_date = commit_info.split(';')
+    num_commits_after_deadline = subprocess.run(
+        f"git log --after='{deadline}' --oneline | wc -l",
+        capture_output=True,
+        text=True,
+        check=True,
+        shell=True
+    ).stdout.strip()
+    print(f"Checkout commit '{commit_id}' of {commit_date} ({num_commits_after_deadline} commits behind HEAD)")
+    subprocess.run(
+        ["git", "checkout", commit_id],
+        capture_output=True,
+        check=True
+    )
+    os.chdir(wd)
+
+
 def evaluate_commit_hist(repo_dir: str) -> Dict[str, int]:
     """ Get number of commits by user. Return dict with user: num_commits """
     wd = os.getcwd()
@@ -115,7 +142,7 @@ def evaluate_jira_issues(jira_board: str) -> dict[str, int]:
     except InvalidURL as error:
         raise JiraEvalError('Invalid JIRA board url') from error
     except jira.JIRAError as error:
-        raise JiraEvalError('JIRA authentication failed') from error
+        raise JiraEvalError('JIRA authentication failed: ' + error.text) from error
     try:
         jql_query = "statusCategory = Done ORDER BY created DESC"
         issues = j_client.search_issues(jql_query)
@@ -210,6 +237,8 @@ def evaluate_teams(sheet_url: str, temp_dir: str) -> pd.DataFrame:
             repo_dir = os.path.join(temp_dir, team.id)
             try:
                 clone_repo(team.repository, repo_dir)
+                deadline = os.getenv('DEADLINE', dt.datetime.now().strftime("%Y-%m-%d %H:%M:%s"))
+                checkout_last_valid_commit(repo_dir, deadline=deadline)
             except CloneRepoError as err:
                 contributors = None
                 errors = f"Error when cloning repo: {err}"
