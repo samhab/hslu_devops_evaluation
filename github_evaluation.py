@@ -13,6 +13,7 @@ from requests.exceptions import InvalidURL
 REPO_URL_REGEX = re.compile(r"https://github\.com/[A-Za-z0-9\-\_]+/[A-Za-z0-9\-\_]+")
 JIRA_URL_REGEX = re.compile(r"https://[A-Za-z0-9\-\_]+\.atlassian\.net")
 BENCHMARK_OUTPUT_REGEX = re.compile(r"(Tests:\s\d+/\d+\svalid\nMark:\s\s\d+/\d+\spoints)\n\n$")
+BENCHMARK_TEST_REGEX = re.compile(r"(92m|91m)Test\s(\d\d\d)\x1b\[0m:\s([^\n]+?)\s\[\d\d?\spoints?\]")
 
 @dataclass
 class Team:
@@ -165,7 +166,20 @@ class RunBenchmarkError(Exception):
     pass
 
 
-def run_benchmark(repo_dir: str, game: str, timeout: int = 120) -> str:
+@dataclass
+class TestResult:
+    test_nr: int
+    test_name: str
+    passed: bool
+
+
+@dataclass
+class BenchmarkResult:
+    overall_results: str
+    test_results: list[TestResult]
+
+
+def run_benchmark(repo_dir: str, game: str, timeout: int = 120) -> BenchmarkResult:
     wd = os.getcwd()
     os.chdir(repo_dir)
     try:
@@ -186,10 +200,15 @@ def run_benchmark(repo_dir: str, game: str, timeout: int = 120) -> str:
     os.chdir(wd)
     if result.returncode != 0:
         raise RunBenchmarkError("Benchmark evaluation failed with message: " + result.stderr)
-    scores = BENCHMARK_OUTPUT_REGEX.search(result.stdout)
-    if scores:
-        return scores.group(1)
-    raise RunBenchmarkError("No proper Benchmark output (missing 'Tests/Mark' section)")
+    overall_score = BENCHMARK_OUTPUT_REGEX.search(result.stdout)
+    if not overall_score:
+        raise RunBenchmarkError("No proper Benchmark output (missing 'Tests/Mark' section)")
+    test_scores = BENCHMARK_TEST_REGEX.findall(result.stdout)
+    test_results = []
+    for test in test_scores:
+        test_results.append(TestResult(test_nr=int(test[1]), test_name=test[2], passed=test[0] == '92m'))
+    benchmark_result = BenchmarkResult(overall_results=overall_score.group(1), test_results=test_results)
+    return benchmark_result
 
 
 def prepare_benchmark_evaluation(
@@ -203,74 +222,112 @@ def prepare_benchmark_evaluation(
     return repo_dir
 
 
-def run_all_benchmarks(repo_dir: str, benchmark_repo_dir: str) -> dict[str, str]:
+def run_all_benchmarks(repo_dir: str, benchmark_repo_dir: str) -> dict[str, BenchmarkResult]:
     """
     Replace the benchmark files in 'repo_dir' with the files from 'benchmark_repo_dir' and evaluate
-    Returns dict with 'game': 'eval string'
+    Returns dict with 'game': benchmark results
     """
     if os.path.exists(os.path.join(repo_dir, 'benchmark')):
         shutil.rmtree(os.path.join(repo_dir, 'benchmark'))
     shutil.copytree(os.path.join(benchmark_repo_dir, 'benchmark'), os.path.join(repo_dir, 'benchmark'))
     shutil.copy(os.path.join(benchmark_repo_dir, 'mypy.ini'), repo_dir)
     shutil.copy(os.path.join(benchmark_repo_dir, '.pylintrc'), repo_dir)
-    out = {}
+    out: dict[str, BenchmarkResult] = {}
     for game in ['hangman', 'battleship', 'uno', 'dog']:
         try:
             out[game] = run_benchmark(repo_dir, game)
         except RunBenchmarkError as err:
-            out[game] = str(err)
+            out[game] = BenchmarkResult(overall_results=str(err), test_results=[])
     return out
 
 
-def evaluate_teams(sheet_url: str, temp_dir: str) -> pd.DataFrame:
+@dataclass
+class TeamResult:
+    git_contributors: str | None
+    github_errors: str
+    completed_jira_issues: str | None
+    benchmark_results: dict[str, BenchmarkResult]
+
+
+def evaluate_team(team: Team, temp_dir: str, master_repo: str) -> TeamResult:
+    errors = "no errors"
+    benchmark_results = {}
+    if team.repository is None:
+        contributors = None
+        errors = "No repository url in spreadsheed"
+    else:
+        print(f"Check repository of team {team.name} ({team.repository})")
+        repo_dir = os.path.join(temp_dir, team.id)
+        try:
+            clone_repo(team.repository, repo_dir)
+            deadline = os.getenv('DEADLINE', dt.datetime.now().strftime("%Y-%m-%d %H:%M:%s"))
+            checkout_last_valid_commit(repo_dir, deadline=deadline)
+        except CloneRepoError as err:
+            contributors = None
+            errors = f"Error when cloning repo: {err}"
+        else:
+            eval_results = evaluate_commit_hist(repo_dir)
+            remove_lecturer_contributions(eval_results)
+            contributors = ", ".join([f"{user} ({commits})" for user, commits in eval_results.items()])
+            benchmark_results = run_all_benchmarks(repo_dir, master_repo)
+        shutil.rmtree(repo_dir)
+    if team.jira_board is None:
+        jira_eval_results = None
+    else:
+        try:
+            jira_res = evaluate_jira_issues(team.jira_board)
+            jira_eval_results = ", ".join([f"{user} ({issues})" for user, issues in jira_res.items()])
+        except JiraEvalError as error:
+            jira_eval_results = str(error)
+    return TeamResult(
+        git_contributors=contributors,
+        github_errors=errors,
+        completed_jira_issues=jira_eval_results,
+        benchmark_results=benchmark_results
+    )
+
+
+def evaluate_teams(sheet_url: str, temp_dir: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     teams = read_team_spreadsheet(sheet_url)
     master_repo = prepare_benchmark_evaluation(temp_dir=temp_dir)
-    out = []
-    for team in teams:
-        errors = "no errors"
-        benchmark_results = {}
-        if team.repository is None:
-            contributors = None
-            errors = "No repository url in spreadsheed"
-        else:
-            print(f"Check repository of team {team.name} ({team.repository})")
-            repo_dir = os.path.join(temp_dir, team.id)
-            try:
-                clone_repo(team.repository, repo_dir)
-                deadline = os.getenv('DEADLINE', dt.datetime.now().strftime("%Y-%m-%d %H:%M:%s"))
-                checkout_last_valid_commit(repo_dir, deadline=deadline)
-            except CloneRepoError as err:
-                contributors = None
-                errors = f"Error when cloning repo: {err}"
-            else:
-                eval_results = evaluate_commit_hist(repo_dir)
-                remove_lecturer_contributions(eval_results)
-                contributors = ", ".join([f"{user} ({commits})" for user, commits in eval_results.items()])
-                benchmark_results = run_all_benchmarks(repo_dir, master_repo)
-            shutil.rmtree(repo_dir)
-        if team.jira_board is None:
-            jira_eval_results = None
-        else:
-            try:
-                jira_res = evaluate_jira_issues(team.jira_board)
-                jira_eval_results = ", ".join([f"{user} ({issues})" for user, issues in jira_res.items()])
-            except JiraEvalError as error:
-                jira_eval_results = str(error)
-        out.append({
+    main_table = []
+    uno_table = []
+    dog_table = []
+    for team in teams[:2]:
+        team_result = evaluate_team(team=team, temp_dir=temp_dir, master_repo=master_repo)
+        main_table.append({
             "team_id": team.nr,
             "team_name": team.name,
             "repository": team.repository,
-            "contributors": contributors,
-            "github_errors": errors,
+            "contributors": team_result.git_contributors,
+            "github_errors": team_result.github_errors,
             "jira_board": team.jira_board,
-            "completed_jira_issues": jira_eval_results,
-            "hangman_benchmark": benchmark_results['hangman'] if 'hangman' in benchmark_results else '-',
-            "battleship_benchmark": benchmark_results['battleship'] if 'battleship' in benchmark_results else '-',
-            "uno_benchmark": benchmark_results['uno'] if 'uno' in benchmark_results else '-',
-            "dog_benchmark": benchmark_results['dog'] if 'dog' in benchmark_results else '-'
+            "completed_jira_issues": team_result.completed_jira_issues,
+            "hangman_benchmark": team_result.benchmark_results['hangman'].overall_results
+                if 'hangman' in team_result.benchmark_results else '-',
+            "battleship_benchmark": team_result.benchmark_results['battleship'].overall_results
+                if 'battleship' in team_result.benchmark_results else '-',
+            "uno_benchmark": team_result.benchmark_results['uno'].overall_results
+                if 'uno' in team_result.benchmark_results else '-',
+            "dog_benchmark": team_result.benchmark_results['dog'].overall_results
+                if 'dog' in team_result.benchmark_results else '-',
             })
+        if 'uno' in team_result.benchmark_results:
+            uno_tests = team_result.benchmark_results['uno'].test_results
+            if len(uno_tests) > 0:
+                uno_test_results: dict[str, str | int | None] = {"team_id": team.nr, "team_name": team.name}
+                for test in uno_tests:
+                    uno_test_results[f"{test.test_nr}: {test.test_name}"] = 1 if test.passed else 0
+                uno_table.append(uno_test_results)
+        if 'dog' in team_result.benchmark_results:
+            dog_tests = team_result.benchmark_results['dog'].test_results
+            if len(dog_tests) > 0:
+                dog_test_results: dict[str, str | int | None] = {"team_id": team.nr, "team_name": team.name}
+                for test in dog_tests:
+                    dog_test_results[f"{test.test_nr}: {test.test_name}"] = 1 if test.passed else 0
+                dog_table.append(dog_test_results)
     shutil.rmtree(master_repo)
-    return pd.DataFrame(out)
+    return pd.DataFrame(main_table), pd.DataFrame(uno_table), pd.DataFrame(dog_table)
 
 
 if __name__ == "__main__":
@@ -283,5 +340,7 @@ if __name__ == "__main__":
     tempdir = os.getenv("TEMPDIR")
     if tempdir is None:
         raise ValueError('No temporary directory provided')
-    res = evaluate_teams(url, tempdir)
+    res, uno, dog = evaluate_teams(url, tempdir)
     res.to_csv('evaluation_results.csv', index=False, sep=';')
+    uno.to_csv('uno_test_overview.csv', index=False, sep=';')
+    dog.to_csv('dog_test_overview.csv', index=False, sep=';')
