@@ -293,7 +293,7 @@ def evaluate_teams(sheet_url: str, temp_dir: str) -> tuple[pd.DataFrame, pd.Data
     main_table = []
     uno_table = []
     dog_table = []
-    for team in teams[:2]:
+    for team in teams:
         team_result = evaluate_team(team=team, temp_dir=temp_dir, master_repo=master_repo)
         main_table.append({
             "team_id": team.nr,
