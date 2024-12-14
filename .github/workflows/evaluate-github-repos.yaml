@@ -19,5 +19,8 @@ jobs:
       - name: Upload evaluation results
         uses: actions/upload-artifact@v4
         with:
-          name: evaluation_results.csv
-          path: evaluation_results.csv
+          name: evaluation-results
+          path: |
+            evaluation_results.csv
+            uno_test_overview.csv
+            dog_test_overview.csv
