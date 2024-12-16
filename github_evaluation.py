@@ -12,7 +12,7 @@ from requests.exceptions import InvalidURL
 
 REPO_URL_REGEX = re.compile(r"https://github\.com/[A-Za-z0-9\-\_]+/[A-Za-z0-9\-\_]+")
 JIRA_URL_REGEX = re.compile(r"https://[A-Za-z0-9\-\_]+\.atlassian\.net")
-BENCHMARK_OUTPUT_REGEX = re.compile(r"(Tests:\s\d+/\d+\svalid\nMark:\s\s\d+/\d+\spoints)\n\n$")
+BENCHMARK_OUTPUT_REGEX = re.compile(r"(Tests:\s\d+/\d+\svalid\nMark:\s\s(\d+)/(\d+)\spoints)\n\n$")
 BENCHMARK_TEST_REGEX = re.compile(r"(92m|91m)Test\s(\d\d\d)\x1b\[0m:\s([^\n]+?)\s\[\d\d?\spoints?\]")
 
 @dataclass
@@ -176,6 +176,7 @@ class TestResult:
 @dataclass
 class BenchmarkResult:
     overall_results: str
+    percentage: float
     test_results: list[TestResult]
 
 
@@ -207,8 +208,11 @@ def run_benchmark(repo_dir: str, game: str, timeout: int = 120) -> BenchmarkResu
     test_results = []
     for test in test_scores:
         test_results.append(TestResult(test_nr=int(test[1]), test_name=test[2], passed=test[0] == '92m'))
-    benchmark_result = BenchmarkResult(overall_results=overall_score.group(1), test_results=test_results)
-    return benchmark_result
+    return BenchmarkResult(
+        overall_results=overall_score.group(1),
+        percentage=float(overall_score.group(2))/float(overall_score.group(3)),
+        test_results=test_results
+        )
 
 
 def prepare_benchmark_evaluation(
@@ -237,7 +241,7 @@ def run_all_benchmarks(repo_dir: str, benchmark_repo_dir: str) -> dict[str, Benc
         try:
             out[game] = run_benchmark(repo_dir, game)
         except RunBenchmarkError as err:
-            out[game] = BenchmarkResult(overall_results=str(err), test_results=[])
+            out[game] = BenchmarkResult(overall_results=str(err), percentage=0, test_results=[])
     return out
 
 
@@ -310,6 +314,14 @@ def evaluate_teams(sheet_url: str, temp_dir: str) -> tuple[pd.DataFrame, pd.Data
             "uno_benchmark": team_result.benchmark_results['uno'].overall_results
                 if 'uno' in team_result.benchmark_results else '-',
             "dog_benchmark": team_result.benchmark_results['dog'].overall_results
+                if 'dog' in team_result.benchmark_results else '-',
+            "hangman_score": team_result.benchmark_results['hangman'].percentage
+                if 'hangman' in team_result.benchmark_results else '-',
+            "battleship_score": team_result.benchmark_results['battleship'].percentage
+                if 'battleship' in team_result.benchmark_results else '-',
+            "uno_score": team_result.benchmark_results['uno'].percentage
+                if 'uno' in team_result.benchmark_results else '-',
+            "dog_score": team_result.benchmark_results['dog'].percentage
                 if 'dog' in team_result.benchmark_results else '-',
             })
         if 'uno' in team_result.benchmark_results:
