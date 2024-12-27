@@ -15,7 +15,7 @@ jobs:
       - name: Install requirements
         run: pip install -r requirements.txt
       - name: Run checks
-        run: python github_evaluation.py
+        run: python teamwork_evaluation.py
       - name: Upload evaluation results
         uses: actions/upload-artifact@v4
         with:
