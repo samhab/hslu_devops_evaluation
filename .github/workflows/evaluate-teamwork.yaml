@@ -5,7 +5,7 @@ env:
   TEMPDIR: "/tmp"
   JIRA_EMAIL: ${{ vars.JIRA_EMAIL }}
   JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-  DEADLINE: "2024-12-21 00:00:00"
+  DEADLINE: "2024-12-21 00:00 CET"
 jobs:
   check-repos:
     runs-on: ubuntu-latest
