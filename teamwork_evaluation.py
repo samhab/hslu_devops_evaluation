@@ -146,7 +146,7 @@ def evaluate_jira_issues(jira_board: str) -> dict[str, int]:
         raise JiraEvalError('JIRA authentication failed: ' + error.text) from error
     try:
         jql_query = "statusCategory = Done ORDER BY created DESC"
-        issues = j_client.search_issues(jql_query)
+        issues = j_client.search_issues(jql_query, maxResults=False)
     except jira.JIRAError as error:
         raise JiraEvalError("Jira Query issue: " + error.text) from error
     assignees: dict[str, int] = {}
